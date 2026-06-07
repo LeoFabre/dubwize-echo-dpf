@@ -1,0 +1,11 @@
+build/
+build-host/
+build-ui/
+build-arm64/
+*.vst3
+*.lv2
+*.o
+# null-test generated audio — never commit these
+test/fixtures/*.wav
+test/fixtures/out_*.wav
+out_*.wav

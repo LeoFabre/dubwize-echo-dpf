@@ -1,0 +1,25 @@
+function(dubwize_add_test name)
+    add_executable(${name} ${name}.cpp)
+    target_include_directories(${name} PRIVATE
+        ${CMAKE_SOURCE_DIR}/dsp
+        ${CMAKE_SOURCE_DIR}/plugin)
+    target_compile_features(${name} PRIVATE cxx_std_17)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+dubwize_add_test(test_dsp_math)
+dubwize_add_test(test_smoothed_value)
+dubwize_add_test(test_circular_buffer)
+dubwize_add_test(test_dc_blocker)
+dubwize_add_test(test_bitmod)
+dubwize_add_test(test_noise)
+dubwize_add_test(test_lfo)
+dubwize_add_test(test_svf)
+dubwize_add_test(test_tape)
+dubwize_add_test(test_tap_tempo)
+dubwize_add_test(test_param_metadata)
+
+add_executable(test_engine_offline test_engine_offline.cpp)
+target_include_directories(test_engine_offline PRIVATE ${CMAKE_SOURCE_DIR}/dsp ${CMAKE_SOURCE_DIR}/plugin)
+target_compile_features(test_engine_offline PRIVATE cxx_std_17)
+add_test(NAME test_engine_offline COMMAND test_engine_offline)
