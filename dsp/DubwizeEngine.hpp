@@ -166,13 +166,17 @@ public:
             decimPhasor[channel] = 0.0f;
             decimCurrentOutput[channel] = 0.0f;
 
-            hpf[channel].reset(fs);
-            hpf[channel].setParameters(hpfCutoff_Hz.getCurrentValue(), hpfQ_lin.getTargetValue(), false, false, 0.0f, 0.0f,
-                                       1.0f, 0.0f, false);
+            // lpf/hpf are single stereo objects (shared coeffs) — init once.
+            if (channel == 0)
+            {
+                hpf.reset(fs);
+                hpf.setParameters(hpfCutoff_Hz.getCurrentValue(), hpfQ_lin.getTargetValue(), false, false, 0.0f, 0.0f,
+                                  1.0f, 0.0f, false);
 
-            lpf[channel].reset(fs);
-            lpf[channel].setParameters(lpfCutoff_Hz.getCurrentValue(), lpfQ_lin.getTargetValue(), false, false, 0.0f, 0.0f,
-                                       0.0f, 1.0f, false);
+                lpf.reset(fs);
+                lpf.setParameters(lpfCutoff_Hz.getCurrentValue(), lpfQ_lin.getTargetValue(), false, false, 0.0f, 0.0f,
+                                  0.0f, 1.0f, false);
+            }
 
             dcBlocker[channel].reset(fs);
         }
@@ -282,10 +286,10 @@ public:
                     modLfo[channel].setParams(modRate, modDepth, modWave, FastMathLfo::LFOPolarity::Unipolar);
                 }
 
-                if (filterParamsChanged)
+                if (filterParamsChanged && channel == 0)   // shared coeffs: set once
                 {
-                    lpf[channel].setParameters(lpfCutoff, lpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 0.0f, 1.0f, false);
-                    hpf[channel].setParameters(hpfCutoff, hpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 1.0f, 0.0f, false);
+                    lpf.setParameters(lpfCutoff, lpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 0.0f, 1.0f, false);
+                    hpf.setParameters(hpfCutoff, hpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 1.0f, 0.0f, false);
                 }
 
                 auto modDepthSmpls = modEnabled ? modLfo[channel].getNextSample(0.0f) * maxModDepth_smpls : 0.0f;
@@ -335,16 +339,21 @@ public:
                 duckingEnvelope = std::pow(noiseSidechainEnvelope, NOISE_DUCKING_ENVELOPE_CURVE);
             }
 
-            // Apply filters in feedback path
+            // Apply filters in feedback path — both channels in one SIMD op
+            // (lanes 0,1) when stereo; lane 0 only when mono.
             if (filterEnabled && lpfPosition == FilterPosition::Feedback)
             {
-                for (int channel = 0; channel < numChannels; ++channel)
-                    dlHpfOut[channel] = lpf[channel].processSample(dlHpfOut[channel]);
+                if (numChannels == 2)
+                    lpf.processStereo(dlHpfOut[0], dlHpfOut[1]);
+                else
+                    dlHpfOut[0] = lpf.processLane(0, dlHpfOut[0]);
             }
             if (filterEnabled && hpfPosition == FilterPosition::Feedback)
             {
-                for (int channel = 0; channel < numChannels; ++channel)
-                    dlHpfOut[channel] = hpf[channel].processSample(dlHpfOut[channel]);
+                if (numChannels == 2)
+                    hpf.processStereo(dlHpfOut[0], dlHpfOut[1]);
+                else
+                    dlHpfOut[0] = hpf.processLane(0, dlHpfOut[0]);
             }
 
             // Write feedback with cross-feed
@@ -418,10 +427,10 @@ public:
 
             for (int channel = 0; channel < numChannels; ++channel)
             {
-                if (filterParamsChanged)
+                if (filterParamsChanged && channel == 0)   // shared coeffs: set once
                 {
-                    lpf[channel].setParameters(lpfCutoff, lpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 0.0f, 1.0f, false);
-                    hpf[channel].setParameters(hpfCutoff, hpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 1.0f, 0.0f, false);
+                    lpf.setParameters(lpfCutoff, lpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 0.0f, 1.0f, false);
+                    hpf.setParameters(hpfCutoff, hpfQ, filterGainComp, filterSoftClip, 0.0f, 0.0f, 1.0f, 0.0f, false);
                 }
 
                 const float x = buf[channel][sample];
@@ -626,13 +635,13 @@ private:
     SmoothedValueMultiplicative lpfCutoff_Hz = SmoothedValueMultiplicative(MAX_FILTER_CUTOFF_FREQ);
     SmoothedValueLinear lpfQ_lin = SmoothedValueLinear(MIN_FILTER_Q);
     FilterPosition lpfPosition = FilterPosition::PreBitmod;
-    StaticSvf lpf[NUM_CHANNELS];
+    StaticSvfStereo lpf;   // L/R in lanes 0,1 (shared coeffs); was StaticSvf[NUM_CHANNELS]
 
     // high pass filter
     SmoothedValueMultiplicative hpfCutoff_Hz = SmoothedValueMultiplicative(MIN_FILTER_CUTOFF_FREQ);
     SmoothedValueLinear hpfQ_lin = SmoothedValueLinear(MIN_FILTER_Q);
     FilterPosition hpfPosition = FilterPosition::PreBitmod;
-    StaticSvf hpf[NUM_CHANNELS];
+    StaticSvfStereo hpf;   // L/R in lanes 0,1 (shared coeffs); was StaticSvf[NUM_CHANNELS]
 
     // bit modulation
     bool bmEnabled = true;
@@ -668,15 +677,15 @@ private:
             y = decimCurrentOutput[channel];
         }
 
-        // LPF if PreBitmod
+        // LPF if PreBitmod (one channel here — scalar lane, exact)
         if (filterEnabled && lpfPosition == FilterPosition::PreBitmod)
         {
-            y = lpf[channel].processSample(y);
+            y = lpf.processLane(channel, y);
         }
         // HPF if PreBitmod
         if (filterEnabled && hpfPosition == FilterPosition::PreBitmod)
         {
-            y = hpf[channel].processSample(y);
+            y = hpf.processLane(channel, y);
         }
 
         // bit modulation
@@ -704,15 +713,15 @@ private:
         if (bmEnabled)
             y = dcBlocker[channel].processSample(y);
 
-        // LPF if PostBitmod
+        // LPF if PostBitmod (one channel here — scalar lane, exact)
         if (filterEnabled && lpfPosition == FilterPosition::PostBitmod)
         {
-            y = lpf[channel].processSample(y);
+            y = lpf.processLane(channel, y);
         }
         // HPF if PostBitmod
         if (filterEnabled && hpfPosition == FilterPosition::PostBitmod)
         {
-            y = hpf[channel].processSample(y);
+            y = hpf.processLane(channel, y);
         }
 
         return y;
