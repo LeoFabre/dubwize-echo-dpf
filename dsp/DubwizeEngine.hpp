@@ -159,7 +159,7 @@ public:
             delayHiPass[channel].reset(fs);
             delayHiPass[channel].setParameters(100.0f, 0.707f, false, false, 0.0f, 0.0f, 1.0f, 0.0f, false);
 
-            tapeCoeffsNeedInit_ = true;
+            tapeStage_.invalidateCoeffs();
 
             modLfo[channel].reset(fs);
 
@@ -307,13 +307,12 @@ public:
                         tapeDelayBandpass[channel].setParameters(TapeStage::ageToCenterFreq(tapeAge), TapeStage::ageToQ(tapeAge),
                                                                  false, false, 0.0f, 1.0f, 0.0f, 0.0f, false);
 
-                    // Soft-clip coeffs depend only on drive/bias; refresh when tape params move.
-                    // Gate on channel == 0 so the (channel-independent) coeffs update once per sample.
-                    if (channel == 0 && (tapeValsSmoothing || tapeCoeffsNeedInit_))
-                    {
+                    // Soft-clip coeffs depend only on drive/bias (channel-independent),
+                    // so refresh once per sample on channel 0. updateCoeffs() itself
+                    // skips the recompute when drive/bias are unchanged, so this is
+                    // cheap when static and exact while smoothing.
+                    if (channel == 0)
                         tapeStage_.updateCoeffs(tapeDrive, tapeBias);
-                        tapeCoeffsNeedInit_ = false;
-                    }
 
                     delayLineOut = tapeStage_.softClipperCached(delayLineOut);
                     delayLineOut = TapeStage::tapeCompressor(delayLineOut, tapeComp);
@@ -570,7 +569,6 @@ private:
     SmoothedValueLinear tapeAge_pct = SmoothedValueLinear(DEFAULT_TAPE_AGE_PCT);
     SmoothedValueLinear tapeBias_lin = SmoothedValueLinear(DEFAULT_TAPE_BIAS);
     bool tapeFilterParamsChanged = false;
-    bool tapeCoeffsNeedInit_ = true;
 
     CircularBuffer delayBuffer[NUM_CHANNELS];
     TapeStage tapeStage_;

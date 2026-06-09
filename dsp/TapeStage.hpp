@@ -39,21 +39,40 @@ struct TapeStage
         return compensation > 0.0001f ? driven / compensation : driven;
     }
 
-    // --- Coefficient-cached soft clipper (numerically equivalent to softClipper) ---
-    // Hoists the input-independent terms (biasedZero, 1/compensation) out of the
-    // per-sample path; recomputed only when bias/drive change via updateCoeffs().
+    // --- Coefficient-cached soft clipper (BIT-IDENTICAL to softClipper) ---
+    // The input-independent terms (biasedZero, compensation) depend only on
+    // drive/bias. We recompute them only when drive/bias actually change and
+    // reuse them otherwise — reusing a deterministic tanh of unchanged inputs is
+    // identical to recomputing it. We keep the SAME clamping, the SAME passthrough
+    // conditions, and DIVISION by compensation (not a reciprocal-multiply), so
+    // softClipperCached(x) == softClipper(x, drive, bias) for every sample. This
+    // is a pure speed optimization (skips the 2 invariant tanh when params are
+    // static — the common case) with no output change.
+    //
+    // NOTE: a previous version gated the refresh on "smoothing" and multiplied by
+    // 1/compensation, which let biasedZero_ go stale at steady state and injected
+    // a constant offset into the feedback loop (a ~-14 dB regression). Do not
+    // reintroduce a smoothing gate here — change detection is what keeps it both
+    // correct and cheap.
     void updateCoeffs(float drive, float bias)
     {
+        if (coeffsValid_ && drive == lastDrive_ && bias == lastBias_)
+            return;
+        lastDrive_ = drive;
+        lastBias_  = bias;
+        coeffsValid_ = true;
+
         drive_ = jlimit(MIN_TAPE_DRIVE, MAX_TAPE_DRIVE, drive);
         bias_  = jlimit(MIN_TAPE_BIAS,  MAX_TAPE_BIAS,  bias);
 
-        passthrough_ = (drive_ <= 0.0001f);
-
-        biasedZero_ = std::tanh(bias_ * drive_);
-        const float compensation = std::tanh(drive_);
-        compensate_   = compensation > 0.0001f;
-        invCompensation_ = compensate_ ? (1.0f / compensation) : 1.0f;
+        passthrough_  = (drive_ <= 0.0001f);
+        biasedZero_   = std::tanh(bias_ * drive_);
+        compensation_ = std::tanh(drive_);
+        compensate_   = compensation_ > 0.0001f;
     }
+
+    // Force the next updateCoeffs() to recompute (call on engine reset).
+    void invalidateCoeffs() { coeffsValid_ = false; }
 
     float softClipperCached(float x) const
     {
@@ -61,7 +80,7 @@ struct TapeStage
             return x;
 
         const float driven = std::tanh((x + bias_) * drive_) - biasedZero_;
-        return compensate_ ? driven * invCompensation_ : driven;
+        return compensate_ ? driven / compensation_ : driven;
     }
 
     static float tapeCompressor(float x, float compPct)
@@ -90,9 +109,13 @@ private:
     float drive_ = 0.0f;
     float bias_  = 0.0f;
     float biasedZero_ = 0.0f;
-    float invCompensation_ = 1.0f;
+    float compensation_ = 1.0f;
     bool  passthrough_ = true;
     bool  compensate_  = false;
+    // Change detection: recompute coeffs only when drive/bias differ from last.
+    float lastDrive_ = 0.0f;
+    float lastBias_  = 0.0f;
+    bool  coeffsValid_ = false;
 };
 
 } // namespace dubwize
