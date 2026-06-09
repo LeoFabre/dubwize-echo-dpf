@@ -189,34 +189,6 @@ public:
         l = o[0]; r = o[1];
     }
 
-    // Process ONE lane (channel) scalar, advancing only that lane's state.
-    // Byte-for-byte StaticSvf::processSample with the shared coeffs and this
-    // lane's sn_1/sn_2 — used where only one channel is available at a call
-    // site (applyEffects' per-channel positions), so the same unified object
-    // holds the state whether a sample goes through processStereo or here.
-    float processLane(int lane, float x)
-    {
-        if (enableGainComp)
-            x *= halfPeak;
-
-        float& s1 = sn_1[lane];
-        float& s2 = sn_2[lane];
-
-        auto hpf = alpha_0 * (x - rho * s1 - s2);
-        auto bpf = alpha * hpf + s1;
-        if (enableSoftClipper)
-            bpf = std::tanh(bpf);
-
-        auto lpf  = alpha * bpf + s2;
-        auto bsf  = hpf + lpf;
-        auto lpf2 = matchAnalogNyquistLPF ? lpf + sigma * s1 : lpf;
-
-        s1 = alpha * hpf + bpf;
-        s2 = alpha * bpf + lpf;
-
-        return bsfMix * bsf + bpfMix * bpf + hpfMix * hpf + lpfMix * lpf2;
-    }
-
 private:
     float fs = 44100.0f;
     float fc = 1000.0f;
