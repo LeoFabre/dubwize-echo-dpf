@@ -39,6 +39,31 @@ struct TapeStage
         return compensation > 0.0001f ? driven / compensation : driven;
     }
 
+    // --- Coefficient-cached soft clipper (numerically equivalent to softClipper) ---
+    // Hoists the input-independent terms (biasedZero, 1/compensation) out of the
+    // per-sample path; recomputed only when bias/drive change via updateCoeffs().
+    void updateCoeffs(float drive, float bias)
+    {
+        drive_ = jlimit(MIN_TAPE_DRIVE, MAX_TAPE_DRIVE, drive);
+        bias_  = jlimit(MIN_TAPE_BIAS,  MAX_TAPE_BIAS,  bias);
+
+        passthrough_ = (drive_ <= 0.0001f);
+
+        biasedZero_ = std::tanh(bias_ * drive_);
+        const float compensation = std::tanh(drive_);
+        compensate_   = compensation > 0.0001f;
+        invCompensation_ = compensate_ ? (1.0f / compensation) : 1.0f;
+    }
+
+    float softClipperCached(float x) const
+    {
+        if (passthrough_)
+            return x;
+
+        const float driven = std::tanh((x + bias_) * drive_) - biasedZero_;
+        return compensate_ ? driven * invCompensation_ : driven;
+    }
+
     static float tapeCompressor(float x, float compPct)
     {
         const float amount = jlimit(0.0f, 1.0f, compPct * 0.01f);
@@ -59,6 +84,15 @@ struct TapeStage
 
         return compressed * makeup;
     }
+
+private:
+    // Cached soft-clipper coefficients (see updateCoeffs / softClipperCached).
+    float drive_ = 0.0f;
+    float bias_  = 0.0f;
+    float biasedZero_ = 0.0f;
+    float invCompensation_ = 1.0f;
+    bool  passthrough_ = true;
+    bool  compensate_  = false;
 };
 
 } // namespace dubwize

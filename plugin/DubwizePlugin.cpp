@@ -1,4 +1,5 @@
 #include "DubwizePlugin.hpp"
+#include "DenormalGuard.hpp"
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
@@ -93,13 +94,19 @@ void DubwizePlugin::activate()
 
 void DubwizePlugin::run(const float** inputs, float** outputs, uint32_t frames)
 {
+    ftz::armOnce();
     const double blockStartMs = frameClockMs_;
     const float fs = (float) getSampleRate();
 
     // 2. Copy inputs -> outputs first; operate on outputs as the working buffer.
+    //    inputs and outputs are distinct buffers, so __restrict is valid here.
     for (int ch = 0; ch < 2; ++ch)
+    {
+        const float* __restrict src = inputs[ch];
+        float* __restrict dst = outputs[ch];
         for (uint32_t i = 0; i < frames; ++i)
-            outputs[ch][i] = inputs[ch][i];
+            dst[i] = src[i];
+    }
 
     // 3. Capture dry signal.
     const float mixValue = params_[idx(Param::mix)] / 100.0f;
