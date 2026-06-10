@@ -33,6 +33,10 @@ Header-only, allocation-free modules under `dsp/`, orchestrated by `DubwizeEngin
 (`FastMathApproximations`, `SmoothedValue`, `Decibels`, `Random`) is reimplemented in-tree; fast tan/sin are
 replicated bit-for-bit so a noise-off null-test against the JUCE original reaches ≤ −80 dB.
 
+## Performance
+
+See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for the Cortex-A53 optimization work, measured gains, and the rejected approaches (fast-math, SIMD filters) and why.
+
 ## Footprint
 
 Headless Release build (`DUBWIZE_BUILD_UI=OFF`): the VST3 binary is ~180 KB (bundle ~192 KB), well under the 1 MB
