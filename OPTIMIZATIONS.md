@@ -50,6 +50,53 @@ Lesson: in a feedback structure, unit tests on isolated functions are not enough
 an integration-level null-test against a reference render is what catches
 steady-state drift.
 
+### Ping-pong rework: 3 engines → 1 (`c63014d`, branch `opt/traditional-pingpong`)
+
+The plugin used to run **three full `DubwizeEngine` instances every block,
+unconditionally**: the main engine plus two parallel duplicates (`ppA_`/`ppB_`)
+fed a mono-summed copy (R silenced) and configured `crossFeed=100%,
+timeLink=true`, with their outputs mixed in only when `pingPong > 0`. At
+~1200 ns/sample per engine, two of the three were pure waste whenever the knob
+sat at 0 — and redundant even when it didn't, because the engine's own
+`crossFeed` parameter at 100% *is* the channel-alternation mechanism.
+
+The rework removes `ppA_`/`ppB_` and their scratch buffers entirely and turns
+`pingPong` (same parameter index, symbol, range, default — no host/webapp
+changes) into a morph on the single engine, `pp ∈ [0,1]`:
+
+- **Input routing** (applied only when `pp > 0`, just before
+  `engine_.process`): `inL' = (1-pp)·inL + pp·0.5·(inL+inR)`,
+  `inR' = (1-pp)·inR` — the input is progressively mono-summed into L and R is
+  muted.
+- **Feedback morph**: the crossFeed target pushed to the engine is lerped
+  toward 100%, `cf' = cf + pp·(100% − cf)`, so at `pp = 1` every repeat fully
+  swaps channels. The engine smooths the target internally, exactly like a
+  direct crossFeed change.
+- The user's `timeLink`/`time2` settings stay authoritative (the removed
+  duplicates forced `timeLink=true`); with timeLink off and a distinct time2,
+  ping-pong alternates with dual-time spacing — a feature, not a bug.
+
+**Bit-identity guarantee at `pingPong = 0`**: both the input prep and the
+crossFeed lerp are strictly bypassed (same gate style as the old output-mix
+branch), so the engine sees exactly the same inputs and parameter targets as
+before. Verified with a host differential hosting the real plugin class via
+DPF's `PluginExporter`: 10-second renders old vs new, at default *and*
+non-default parameters, are **byte-identical**. The production preset
+(pingPong defaults to 0) therefore renders bit-identically to the previous
+build.
+
+**Behavior at `pingPong = 100`**: an impulse render shows echoes at exact
+time1 spacing strictly alternating L → R → L → R with the feedback decay —
+traditional ping-pong, cleaner than the old dual-engine blend.
+
+**Measured host gain** (x86 clang -O2, default params, 32-sample chunks):
+9600 → 3487 ns/chunk, a **2.75× speedup** — consistent with removing two of
+three engines. The active `pp > 0` path adds only ~4 mul + 2 add per sample of
+input prep. On-target Cortex-A53 numbers pending device validation.
+
+The DSP engine (`dsp/`) is untouched; the A/B gate passes at −999 dB on all
+presets, including the BitMod worst-case ones.
+
 ## What was tried and rejected
 
 ### Tier 3 fast-math — rejected

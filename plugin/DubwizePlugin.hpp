@@ -23,7 +23,7 @@ protected:
     void  activate() override;
     void  run(const float** inputs, float** outputs, uint32_t frames) override;
 private:
-    dubwize::DubwizeEngine engine_, ppA_, ppB_;
+    dubwize::DubwizeEngine engine_;
     dubwize::TapTempo tapTempo_;
     float params_[dubwize::kNumControlParams] = {};
     float outParams_[dubwize::kNumOutputParams] = {};
@@ -31,7 +31,7 @@ private:
     bool  tapEnabledInternal_ = false;
     double frameClockMs_ = 0.0;
     float lastHostBpm_ = 0.0f;
-    std::vector<float> dryL_, dryR_, ppAL_, ppAR_, ppBL_, ppBR_;
+    std::vector<float> dryL_, dryR_;
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DubwizePlugin)
 };
 END_NAMESPACE_DISTRHO

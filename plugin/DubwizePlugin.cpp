@@ -77,15 +77,9 @@ void DubwizePlugin::activate()
     const double fs = getSampleRate();
     const int mb = (int) getBufferSize();
     engine_.prepare(fs, mb);
-    ppA_.prepare(fs, mb);
-    ppB_.prepare(fs, mb);
 
     dryL_.assign(mb, 0.0f);
     dryR_.assign(mb, 0.0f);
-    ppAL_.assign(mb, 0.0f);
-    ppAR_.assign(mb, 0.0f);
-    ppBL_.assign(mb, 0.0f);
-    ppBR_.assign(mb, 0.0f);
 
     frameClockMs_ = 0.0;
     requiresUpdate_ = true;
@@ -167,6 +161,23 @@ void DubwizePlugin::run(const float** inputs, float** outputs, uint32_t frames)
 
         const float effectiveTime2 = params_[idx(Param::time2)] * beatMultiplyFactor;
 
+        // Ping-pong feedback morph: lerp the engine's crossFeed toward 100% as
+        // pingPong rises, so at pp=1 each repeat fully swaps channels — the same
+        // alternation mechanism the removed parallel ppA/ppB engines used
+        // (they were configured crossFeed=100%). The engine smooths the target
+        // internally (crossFeed_lin), exactly like a direct crossFeed change.
+        // At pp==0 the lerp is strictly bypassed: the engine receives the raw
+        // user crossFeed, keeping the default path bit-identical to the
+        // pre-rework build.
+        // Note on timeLink/time2: the user's settings stay authoritative (the
+        // old ppA/ppB forced timeLink=true; we deliberately do not). With
+        // timeLink off and a distinct time2, ping-pong alternates with
+        // dual-time spacing — a feature, not a bug.
+        const float ppMorph = params_[idx(Param::pingPong)] / 100.0f;
+        float effCrossFeed = params_[idx(Param::crossFeed)];
+        if (ppMorph > 0.0f)
+            effCrossFeed += ppMorph * (100.0f - effCrossFeed);
+
         const DubwizeEngine::DelayParams delayParams {
             .time_ms = effectiveTime,
             .feedback_pct = params_[idx(Param::feedback)],
@@ -183,7 +194,7 @@ void DubwizePlugin::run(const float** inputs, float** outputs, uint32_t frames)
             .noiseType = (DubwizeEngine::NoiseType)(int) params_[idx(Param::noiseType)],
             .noiseDucking_pct = params_[idx(Param::noiseDucking)],
             .noiseEnabled = params_[idx(Param::noiseEnabled)] > 0.5f,
-            .crossFeed_pct = params_[idx(Param::crossFeed)],
+            .crossFeed_pct = effCrossFeed,
             .hold = params_[idx(Param::hold)] > 0.5f,
             .time2_ms = effectiveTime2,
             .timeLink = params_[idx(Param::timeLink)] > 0.5f,
@@ -213,21 +224,6 @@ void DubwizePlugin::run(const float** inputs, float** outputs, uint32_t frames)
 
         engine_.setDelayParameters(delayParams);
         engine_.setEffectsParameters(effectsParams);
-
-        // Ping-pong A: time1, timeLink=true, cf=100%
-        auto ppA = delayParams;
-        ppA.crossFeed_pct = 100.0f;
-        ppA.timeLink = true;
-        ppA_.setDelayParameters(ppA);
-        ppA_.setEffectsParameters(effectsParams);
-
-        // Ping-pong B: time2, timeLink=true, cf=100%
-        auto ppB = delayParams;
-        ppB.crossFeed_pct = 100.0f;
-        ppB.time_ms = effectiveTime2;
-        ppB.timeLink = true;
-        ppB_.setDelayParameters(ppB);
-        ppB_.setEffectsParameters(effectsParams);
 
         requiresUpdate_ = false;
     }
@@ -261,38 +257,29 @@ void DubwizePlugin::run(const float** inputs, float** outputs, uint32_t frames)
         return;
     }
 
-    // 12. Prepare ping-pong inputs: mono sum on L, silence on R.
-    for (uint32_t i = 0; i < frames; ++i)
+    // 12. Ping-pong input routing on the single engine: progressively
+    //     mono-sum the input into L and mute R as pp rises. Combined with the
+    //     crossFeed morph (step 8) the echo then bounces L->R->L... —
+    //     traditional ping-pong, replacing the two duplicate engines (ppA/ppB)
+    //     that used to run unconditionally every block.
+    //     Strict pp==0 bypass: the engine sees bit-identical input vs the
+    //     pre-rework build (same gate style as the old output-mix branch).
+    //     WCET: active path adds ~4 mul + 2 add per sample of input prep —
+    //     negligible; the win is the removal of the 2 unconditional engines.
+    if (ppValue > 0.0f)
     {
-        const float mono = (outputs[0][i] + outputs[1][i]) * 0.5f;
-        ppAL_[i] = mono;
-        ppAR_[i] = 0.0f;
-        ppBL_[i] = mono;
-        ppBR_[i] = 0.0f;
+        const float keep = 1.0f - ppValue;
+        const float monoAmt = ppValue * 0.5f;
+        for (uint32_t i = 0; i < frames; ++i)
+        {
+            const float l = outputs[0][i];
+            const float r = outputs[1][i];
+            outputs[0][i] = keep * l + monoAmt * (l + r);
+            outputs[1][i] = keep * r;
+        }
     }
 
     engine_.process(outputs, 2, (int) frames);
-    {
-        float* a[2] = { ppAL_.data(), ppAR_.data() };
-        ppA_.process(a, 2, (int) frames);
-    }
-    {
-        float* b[2] = { ppBL_.data(), ppBR_.data() };
-        ppB_.process(b, 2, (int) frames);
-    }
-
-    // Blend normal and ping-pong outputs.
-    if (ppValue > 0.0f)
-    {
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            const float* ppA = (ch == 0) ? ppAL_.data() : ppAR_.data();
-            const float* ppB = (ch == 0) ? ppBL_.data() : ppBR_.data();
-            for (uint32_t i = 0; i < frames; ++i)
-                outputs[ch][i] = (1.0f - ppValue) * outputs[ch][i]
-                               + ppValue * 0.5f * (ppA[i] + ppB[i]);
-        }
-    }
 
     // 13. Dry/wet blend + output protection (tanh limiter).
     for (int ch = 0; ch < 2; ++ch)
